@@ -1,11 +1,50 @@
 #include "mode_dimensions.h"
 
-#include "expression_parser.h"
+#include "mode_dimension_state.h"
 
 #include "gui/gui.h"
 #include "runtime/logic_thread.h"
 
-#include <cmath>
+namespace {
+
+ModeDimensionState ToModeDimensionState(const ModeConfig& mode) {
+    ModeDimensionState state;
+    state.id = mode.id;
+    state.width = mode.width;
+    state.height = mode.height;
+    state.manualWidth = mode.manualWidth;
+    state.manualHeight = mode.manualHeight;
+    state.useRelativeSize = mode.useRelativeSize;
+    state.relativeWidth = mode.relativeWidth;
+    state.relativeHeight = mode.relativeHeight;
+    state.widthExpr = mode.widthExpr;
+    state.heightExpr = mode.heightExpr;
+    state.stretch.enabled = mode.stretch.enabled;
+    state.stretch.x = mode.stretch.x;
+    state.stretch.y = mode.stretch.y;
+    state.stretch.width = mode.stretch.width;
+    state.stretch.height = mode.stretch.height;
+    return state;
+}
+
+void ApplyModeDimensionState(const ModeDimensionState& state, ModeConfig& mode) {
+    mode.width = state.width;
+    mode.height = state.height;
+    mode.manualWidth = state.manualWidth;
+    mode.manualHeight = state.manualHeight;
+    mode.useRelativeSize = state.useRelativeSize;
+    mode.relativeWidth = state.relativeWidth;
+    mode.relativeHeight = state.relativeHeight;
+    mode.widthExpr = state.widthExpr;
+    mode.heightExpr = state.heightExpr;
+    mode.stretch.enabled = state.stretch.enabled;
+    mode.stretch.x = state.stretch.x;
+    mode.stretch.y = state.stretch.y;
+    mode.stretch.width = state.stretch.width;
+    mode.stretch.height = state.stretch.height;
+}
+
+} // namespace
 
 bool SyncPreemptiveModeFromEyeZoom(Config& config) {
     ModeConfig* eyezoomMode = nullptr;
@@ -17,146 +56,29 @@ bool SyncPreemptiveModeFromEyeZoom(Config& config) {
 
     if (!eyezoomMode || !preemptiveMode) { return false; }
 
-    bool changed = false;
-    if (preemptiveMode->width != eyezoomMode->width) {
-        preemptiveMode->width = eyezoomMode->width;
-        changed = true;
-    }
-    if (preemptiveMode->height != eyezoomMode->height) {
-        preemptiveMode->height = eyezoomMode->height;
-        changed = true;
-    }
-
-    const int syncedManualWidth = (eyezoomMode->manualWidth > 0) ? eyezoomMode->manualWidth : eyezoomMode->width;
-    const int syncedManualHeight = (eyezoomMode->manualHeight > 0) ? eyezoomMode->manualHeight : eyezoomMode->height;
-    if (preemptiveMode->manualWidth != syncedManualWidth) {
-        preemptiveMode->manualWidth = syncedManualWidth;
-        changed = true;
-    }
-    if (preemptiveMode->manualHeight != syncedManualHeight) {
-        preemptiveMode->manualHeight = syncedManualHeight;
-        changed = true;
-    }
-    if (preemptiveMode->useRelativeSize) {
-        preemptiveMode->useRelativeSize = false;
-        changed = true;
-    }
-    if (preemptiveMode->relativeWidth != -1.0f) {
-        preemptiveMode->relativeWidth = -1.0f;
-        changed = true;
-    }
-    if (preemptiveMode->relativeHeight != -1.0f) {
-        preemptiveMode->relativeHeight = -1.0f;
-        changed = true;
-    }
-    if (!preemptiveMode->widthExpr.empty()) {
-        preemptiveMode->widthExpr.clear();
-        changed = true;
-    }
-    if (!preemptiveMode->heightExpr.empty()) {
-        preemptiveMode->heightExpr.clear();
-        changed = true;
+    const ModeDimensionState eyezoomState = ToModeDimensionState(*eyezoomMode);
+    ModeDimensionState preemptiveState = ToModeDimensionState(*preemptiveMode);
+    const bool changed = SyncPreemptiveModeDimensionState(eyezoomState, preemptiveState);
+    if (changed) {
+        ApplyModeDimensionState(preemptiveState, *preemptiveMode);
     }
 
     return changed;
 }
 
 int ResolveModeDisplayWidth(const ModeConfig& mode, int screenW, int screenH) {
-    if (screenW < 1) screenW = 1;
-    if (screenH < 1) screenH = 1;
-
-    int width = mode.width;
-    const bool relativeAllowed = mode.id != "Preemptive";
-    const bool widthIsRelative = relativeAllowed && mode.useRelativeSize && mode.relativeWidth >= 0.0f && mode.relativeWidth <= 1.0f;
-    if (widthIsRelative) {
-        width = static_cast<int>(std::lround(mode.relativeWidth * static_cast<float>(screenW)));
-        if (width < 1) width = 1;
-    }
-
-    if (mode.id == "Thin" && width < 330) {
-        width = 330;
-    }
-
-    return width;
+    return ResolveModeDimensionDisplayWidth(ToModeDimensionState(mode), screenW, screenH);
 }
 
 int ResolveModeDisplayHeight(const ModeConfig& mode, int screenW, int screenH) {
-    if (screenW < 1) screenW = 1;
-    if (screenH < 1) screenH = 1;
-
-    int height = mode.height;
-    const bool relativeAllowed = mode.id != "Preemptive";
-    const bool heightIsRelative = relativeAllowed && mode.useRelativeSize && mode.relativeHeight >= 0.0f && mode.relativeHeight <= 1.0f;
-    if (heightIsRelative) {
-        height = static_cast<int>(std::lround(mode.relativeHeight * static_cast<float>(screenH)));
-        if (height < 1) height = 1;
-    }
-
-    return height;
+    return ResolveModeDimensionDisplayHeight(ToModeDimensionState(mode), screenW, screenH);
 }
 
 void RecalculateModeDimensions(Config& config, int screenW, int screenH) {
-    if (screenW < 1) screenW = 1;
-    if (screenH < 1) screenH = 1;
-
     for (auto& mode : config.modes) {
-        if (mode.id == "Fullscreen") {
-            // Fullscreen keeps a user-configured internal render size while the
-            // live client area controls only the stretch rect.
-
-            mode.stretch.enabled = true;
-            mode.stretch.x = 0;
-            mode.stretch.y = 0;
-            mode.stretch.width = screenW;
-            mode.stretch.height = screenH;
-        }
-
-        if (mode.id == "Preemptive") {
-            mode.useRelativeSize = false;
-            mode.relativeWidth = -1.0f;
-            mode.relativeHeight = -1.0f;
-            mode.widthExpr.clear();
-            mode.heightExpr.clear();
-        }
-
-        const bool relativeAllowed = mode.id != "Preemptive";
-        const bool expressionAllowed = mode.id != "Fullscreen" && mode.id != "Preemptive";
-        const bool widthIsRelative = relativeAllowed && mode.useRelativeSize && mode.relativeWidth >= 0.0f && mode.relativeWidth <= 1.0f;
-        const bool heightIsRelative = relativeAllowed && mode.useRelativeSize && mode.relativeHeight >= 0.0f && mode.relativeHeight <= 1.0f;
-        const bool widthUsesExpression = expressionAllowed && !widthIsRelative && !mode.widthExpr.empty();
-        const bool heightUsesExpression = expressionAllowed && !heightIsRelative && !mode.heightExpr.empty();
-
-        if (widthIsRelative) {
-            int newWidth = static_cast<int>(std::lround(mode.relativeWidth * static_cast<float>(screenW)));
-            if (newWidth < 1) newWidth = 1;
-            mode.width = newWidth;
-            if (mode.manualWidth < 1) {
-                mode.manualWidth = newWidth;
-            }
-        }
-        if (heightIsRelative) {
-            int newHeight = static_cast<int>(std::lround(mode.relativeHeight * static_cast<float>(screenH)));
-            if (newHeight < 1) newHeight = 1;
-            mode.height = newHeight;
-            if (mode.manualHeight < 1) {
-                mode.manualHeight = newHeight;
-            }
-        }
-
-        if (widthUsesExpression) {
-            int newWidth = EvaluateExpression(mode.widthExpr, screenW, screenH, mode.width);
-            if (newWidth > 0) {
-                mode.width = newWidth;
-            }
-        }
-        if (heightUsesExpression) {
-            int newHeight = EvaluateExpression(mode.heightExpr, screenW, screenH, mode.height);
-            if (newHeight > 0) {
-                mode.height = newHeight;
-            }
-        }
-
-        if (mode.id == "Thin" && mode.width < 330) { mode.width = 330; }
+        ModeDimensionState state = ToModeDimensionState(mode);
+        RecalculateModeDimensionState(state, screenW, screenH);
+        ApplyModeDimensionState(state, mode);
     }
 
     SyncPreemptiveModeFromEyeZoom(config);

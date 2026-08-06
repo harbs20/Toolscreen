@@ -23,7 +23,15 @@ set(TOOLSCREEN_LIBLOGGER_FILE_DESCRIPTION "LibLogger")
 set(TOOLSCREEN_INSTALLER_FILE_DESCRIPTION "Toolscreen installer")
 set(TOOLSCREEN_DOWNLOADER_FILE_DESCRIPTION "Toolscreen downloader")
 
-project(Toolscreen VERSION ${TOOLSCREEN_VERSION} LANGUAGES C CXX RC)
+set(TOOLSCREEN_PROJECT_LANGUAGES C CXX)
+if(WIN32)
+    list(APPEND TOOLSCREEN_PROJECT_LANGUAGES RC)
+endif()
+if(APPLE)
+    list(APPEND TOOLSCREEN_PROJECT_LANGUAGES OBJCXX)
+endif()
+
+project(Toolscreen VERSION ${TOOLSCREEN_VERSION} LANGUAGES ${TOOLSCREEN_PROJECT_LANGUAGES})
 
 include(CTest)
 
@@ -37,13 +45,21 @@ configure_file(
     @ONLY
 )
 
-if(NOT WIN32)
-    message(FATAL_ERROR "Toolscreen only supports Windows builds.")
+set(TOOLSCREEN_BUILD_WINDOWS_RUNTIME_DEFAULT OFF)
+if(WIN32)
+    set(TOOLSCREEN_BUILD_WINDOWS_RUNTIME_DEFAULT ON)
+endif()
+set(TOOLSCREEN_BUILD_MACOS_RUNTIME_DEFAULT OFF)
+if(APPLE)
+    set(TOOLSCREEN_BUILD_MACOS_RUNTIME_DEFAULT ON)
 endif()
 
-option(TOOLSCREEN_ENABLE_JAR_PACKAGING "Enable the EasyInjectBundled jar packaging target." ON)
-option(TOOLSCREEN_ENABLE_EXE_PACKAGING "Enable the EasyInjectBundled EXE packaging targets." ON)
-option(TOOLSCREEN_BUILD_DOWNLOADER_ARTIFACTS "Build the downloader jar and downloader EXE artifacts." ON)
+option(TOOLSCREEN_BUILD_WINDOWS_RUNTIME "Build the injected Windows Toolscreen runtime DLL." ${TOOLSCREEN_BUILD_WINDOWS_RUNTIME_DEFAULT})
+option(TOOLSCREEN_BUILD_MACOS_RUNTIME "Build the experimental macOS runtime dylib skeleton." ${TOOLSCREEN_BUILD_MACOS_RUNTIME_DEFAULT})
+option(TOOLSCREEN_BUILD_PORTABLE_SMOKE_TESTS "Build smoke tests for code that is expected to stay portable across platforms." ON)
+option(TOOLSCREEN_ENABLE_JAR_PACKAGING "Enable the EasyInjectBundled jar packaging target." ${TOOLSCREEN_BUILD_WINDOWS_RUNTIME_DEFAULT})
+option(TOOLSCREEN_ENABLE_EXE_PACKAGING "Enable the EasyInjectBundled EXE packaging targets." ${TOOLSCREEN_BUILD_WINDOWS_RUNTIME_DEFAULT})
+option(TOOLSCREEN_BUILD_DOWNLOADER_ARTIFACTS "Build the downloader jar and downloader EXE artifacts." ${TOOLSCREEN_BUILD_WINDOWS_RUNTIME_DEFAULT})
 option(TOOLSCREEN_ENABLE_NINJABRAIN_API_MANUAL_TESTS "Enable the manual-only Ninjabrain API integration test target." OFF)
 option(TOOLSCREEN_USE_SCCACHE_FRIENDLY_DEBUG_INFO "Use /Z7 instead of /Zi for MSVC release-style builds so compiler launcher caches can hit." OFF)
 option(TOOLSCREEN_STAGE_LIBLOGGER_PDB "Stage the liblogger PDB into the build output directory." ON)
@@ -56,6 +72,11 @@ option(TOOLSCREEN_BUILD_LIBLOGGER_FROM_SOURCE "Build liblogger locally instead o
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+if(APPLE)
+    set(CMAKE_OBJCXX_STANDARD 20)
+    set(CMAKE_OBJCXX_STANDARD_REQUIRED ON)
+    set(CMAKE_OBJCXX_EXTENSIONS OFF)
+endif()
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
 set(TOOLSCREEN_ARTIFACT_ROOT "${CMAKE_BINARY_DIR}/bin")
@@ -132,6 +153,203 @@ endif()
 include(FetchContent)
 
 FetchContent_Declare(
+    nlohmann_json
+    GIT_REPOSITORY https://github.com/nlohmann/json
+    GIT_TAG v3.12.0
+    GIT_SHALLOW TRUE
+)
+
+FetchContent_Declare(
+    cpp_httplib
+    GIT_REPOSITORY https://github.com/yhirose/cpp-httplib
+    GIT_TAG v0.40.0
+    GIT_SHALLOW TRUE
+)
+
+FetchContent_GetProperties(nlohmann_json)
+if(NOT nlohmann_json_POPULATED)
+    FetchContent_Populate(nlohmann_json)
+endif()
+
+FetchContent_GetProperties(cpp_httplib)
+if(NOT cpp_httplib_POPULATED)
+    FetchContent_Populate(cpp_httplib)
+endif()
+
+set(TOOLSCREEN_PORTABLE_CORE_SOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/common/expression_parser.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/common/mode_dimension_state.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/features/ninjabrain_data.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/features/ninjabrain_events.cpp
+)
+
+set(TOOLSCREEN_PORTABLE_CORE_HEADERS
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/common/expression_parser.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/common/mode_dimension_state.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/features/ninjabrain_api_constants.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/features/ninjabrain_data.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/features/ninjabrain_events.h
+)
+
+add_library(toolscreen_portable_core STATIC
+    ${TOOLSCREEN_PORTABLE_CORE_SOURCES}
+    ${TOOLSCREEN_PORTABLE_CORE_HEADERS}
+)
+
+target_include_directories(toolscreen_portable_core PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${nlohmann_json_SOURCE_DIR}/single_include
+)
+
+target_compile_features(toolscreen_portable_core PUBLIC cxx_std_20)
+toolscreen_configure_target_outputs(toolscreen_portable_core)
+toolscreen_enable_release_symbols(toolscreen_portable_core)
+
+if(APPLE)
+    set_target_properties(toolscreen_portable_core PROPERTIES
+        CXX_VISIBILITY_PRESET hidden
+        VISIBILITY_INLINES_HIDDEN YES
+    )
+endif()
+
+if(BUILD_TESTING AND TOOLSCREEN_BUILD_PORTABLE_SMOKE_TESTS)
+    add_executable(toolscreen_portable_smoke_tests
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/portable_core_smoke_tests.cpp
+    )
+
+    target_link_libraries(toolscreen_portable_smoke_tests PRIVATE
+        toolscreen_portable_core
+    )
+
+    if(MSVC)
+        target_compile_options(toolscreen_portable_smoke_tests PRIVATE
+            /W3
+            /MP
+        )
+    endif()
+
+    toolscreen_configure_target_outputs(toolscreen_portable_smoke_tests)
+    toolscreen_enable_release_symbols(toolscreen_portable_smoke_tests)
+
+    add_test(
+        NAME toolscreen_portable_smoke_tests
+        COMMAND toolscreen_portable_smoke_tests
+    )
+endif()
+
+if(TOOLSCREEN_BUILD_MACOS_RUNTIME AND NOT APPLE)
+    message(FATAL_ERROR "TOOLSCREEN_BUILD_MACOS_RUNTIME requires a macOS host/toolchain.")
+endif()
+
+if(TOOLSCREEN_BUILD_MACOS_RUNTIME)
+    find_library(TOOLSCREEN_MACOS_APPLICATIONSERVICES_FRAMEWORK ApplicationServices REQUIRED)
+    find_library(TOOLSCREEN_MACOS_APPKIT_FRAMEWORK AppKit REQUIRED)
+    find_library(TOOLSCREEN_MACOS_CARBON_FRAMEWORK Carbon REQUIRED)
+    find_library(TOOLSCREEN_MACOS_OPENGL_FRAMEWORK OpenGL REQUIRED)
+
+    add_library(toolscreen_macos_runtime SHARED
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/features/ninjabrain_api.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/macos/macos_debug_overlay.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/macos/macos_debug_overlay.h
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/macos/macos_hotkeys.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/macos/macos_hotkeys.h
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/macos/macos_ninjabrain_client.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/macos/macos_ninjabrain_client.h
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/macos/macos_opengl_present_hook.mm
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/macos/macos_runtime.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/macos/macos_runtime.h
+    )
+
+    target_include_directories(toolscreen_macos_runtime PRIVATE
+        ${cpp_httplib_SOURCE_DIR}
+    )
+
+    target_link_libraries(toolscreen_macos_runtime PRIVATE
+        toolscreen_portable_core
+        ${TOOLSCREEN_MACOS_APPLICATIONSERVICES_FRAMEWORK}
+        ${TOOLSCREEN_MACOS_APPKIT_FRAMEWORK}
+        ${TOOLSCREEN_MACOS_CARBON_FRAMEWORK}
+        ${TOOLSCREEN_MACOS_OPENGL_FRAMEWORK}
+    )
+
+    target_compile_definitions(toolscreen_macos_runtime PRIVATE
+        TOOLSCREEN_VERSION_LITERAL="${TOOLSCREEN_VERSION}"
+        TOOLSCREEN_PORTABLE_NINJABRAIN_API
+    )
+
+    target_compile_options(toolscreen_macos_runtime PRIVATE
+        -Wno-deprecated-declarations
+    )
+
+    set_target_properties(toolscreen_macos_runtime PROPERTIES
+        OUTPUT_NAME "ToolscreenMacRuntime"
+        CXX_VISIBILITY_PRESET hidden
+        VISIBILITY_INLINES_HIDDEN YES
+    )
+
+    toolscreen_configure_target_outputs(toolscreen_macos_runtime)
+    toolscreen_enable_release_symbols(toolscreen_macos_runtime)
+
+    if(BUILD_TESTING)
+        add_executable(toolscreen_macos_runtime_loader_tests
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/macos_runtime_loader_tests.cpp
+        )
+
+        target_include_directories(toolscreen_macos_runtime_loader_tests PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src
+        )
+
+        target_link_libraries(toolscreen_macos_runtime_loader_tests PRIVATE
+            ${CMAKE_DL_LIBS}
+        )
+
+        add_dependencies(toolscreen_macos_runtime_loader_tests toolscreen_macos_runtime)
+        toolscreen_configure_target_outputs(toolscreen_macos_runtime_loader_tests)
+        toolscreen_enable_release_symbols(toolscreen_macos_runtime_loader_tests)
+
+        add_test(
+            NAME toolscreen_macos_runtime_loader_tests
+            COMMAND toolscreen_macos_runtime_loader_tests "$<TARGET_FILE:toolscreen_macos_runtime>"
+        )
+
+        add_executable(toolscreen_macos_opengl_harness_tests
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/macos_opengl_harness_tests.cpp
+        )
+
+        target_include_directories(toolscreen_macos_opengl_harness_tests PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src
+        )
+
+        target_compile_options(toolscreen_macos_opengl_harness_tests PRIVATE
+            -Wno-deprecated-declarations
+        )
+
+        target_link_libraries(toolscreen_macos_opengl_harness_tests PRIVATE
+            ${CMAKE_DL_LIBS}
+            ${TOOLSCREEN_MACOS_OPENGL_FRAMEWORK}
+        )
+
+        add_dependencies(toolscreen_macos_opengl_harness_tests toolscreen_macos_runtime)
+        toolscreen_configure_target_outputs(toolscreen_macos_opengl_harness_tests)
+        toolscreen_enable_release_symbols(toolscreen_macos_opengl_harness_tests)
+
+        add_test(
+            NAME toolscreen_macos_opengl_harness_tests
+            COMMAND toolscreen_macos_opengl_harness_tests "$<TARGET_FILE:toolscreen_macos_runtime>"
+        )
+    endif()
+endif()
+
+if(TOOLSCREEN_BUILD_WINDOWS_RUNTIME AND NOT WIN32)
+    message(FATAL_ERROR "TOOLSCREEN_BUILD_WINDOWS_RUNTIME requires a Windows host/toolchain.")
+endif()
+
+if(NOT TOOLSCREEN_BUILD_WINDOWS_RUNTIME)
+    message(STATUS "Skipping injected Windows runtime, packaging, and Windows GUI integration tests.")
+    return()
+endif()
+
+FetchContent_Declare(
     minhook
     GIT_REPOSITORY https://github.com/m417z/minhook-detours
     GIT_TAG v1.0.6
@@ -180,20 +398,6 @@ FetchContent_Declare(
 )
 
 FetchContent_Declare(
-    nlohmann_json
-    GIT_REPOSITORY https://github.com/nlohmann/json
-    GIT_TAG v3.12.0
-    GIT_SHALLOW TRUE
-)
-
-FetchContent_Declare(
-    cpp_httplib
-    GIT_REPOSITORY https://github.com/yhirose/cpp-httplib
-    GIT_TAG v0.40.0
-    GIT_SHALLOW TRUE
-)
-
-FetchContent_Declare(
     webview2_sdk
     URL https://www.nuget.org/api/v2/package/Microsoft.Web.WebView2/1.0.3650.58
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
@@ -223,16 +427,6 @@ add_library(Toolscreen::glew ALIAS toolscreen_glew)
 FetchContent_GetProperties(imgui)
 if(NOT imgui_POPULATED)
     FetchContent_Populate(imgui)
-endif()
-
-FetchContent_GetProperties(nlohmann_json)
-if(NOT nlohmann_json_POPULATED)
-    FetchContent_Populate(nlohmann_json)
-endif()
-
-FetchContent_GetProperties(cpp_httplib)
-if(NOT cpp_httplib_POPULATED)
-    FetchContent_Populate(cpp_httplib)
 endif()
 
 FetchContent_GetProperties(webview2_sdk)
@@ -534,6 +728,7 @@ if(BUILD_TESTING AND TOOLSCREEN_ENABLE_NINJABRAIN_API_MANUAL_TESTS)
         tests/ninjabrain_api_tests.cpp
         src/features/ninjabrain_api.cpp
         src/features/ninjabrain_data.cpp
+        src/features/ninjabrain_events.cpp
     )
 
     target_include_directories(toolscreen_ninjabrain_api_tests PRIVATE
@@ -1196,4 +1391,3 @@ foreach(test_group IN LISTS TOOLSCREEN_GUI_INTEGRATION_TEST_GROUPS)
             TIMEOUT ${TOOLSCREEN_GUI_INTEGRATION_GROUP_TIMEOUT_SECONDS}
     )
 endforeach()
-

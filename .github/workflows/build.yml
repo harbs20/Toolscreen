@@ -23,6 +23,25 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  macos_portable:
+    runs-on: macos-latest
+    permissions:
+      actions: read
+      contents: read
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Configure portable macOS build
+        run: cmake --preset macos-portable
+
+      - name: Build portable macOS smoke tests
+        run: cmake --build --preset macos-portable-debug --parallel
+
+      - name: Run portable macOS smoke tests
+        run: ctest --preset macos-portable
+
   build_core:
     runs-on: windows-latest
     permissions:

@@ -1,13 +1,11 @@
 #pragma once
 
-#include "features/ninjabrain_data.h"
+#include "features/ninjabrain_events.h"
 
 #include <functional>
 #include <stop_token>
 #include <string>
 #include <thread>
-
-using NinjabrainLogCallback = std::function<void(const std::string&)>;
 
 enum class NinjabrainApiConnectionState {
         Stopped,
@@ -56,33 +54,6 @@ class NinjabrainApiConnectionTracker {
         StreamState boatState_ = StreamState::Disconnected;
         StreamState blindState_ = StreamState::Disconnected;
 };
-
-void ClearNinjabrainStrongholdData(NinjabrainData& data);
-void ClearNinjabrainInformationMessagesData(NinjabrainData& data);
-void ClearNinjabrainBoatData(NinjabrainData& data);
-    void ClearNinjabrainBlindData(NinjabrainData& data);
-
-void ApplyNinjabrainBoatEvent(
-    const std::string& payload,
-    NinjabrainData& data,
-    const NinjabrainLogCallback& logError = {});
-
-void ApplyNinjabrainStrongholdEvent(
-    const std::string& payload,
-    NinjabrainData& data,
-    const NinjabrainLogCallback& logError = {});
-
-void ApplyNinjabrainInformationMessagesEvent(
-    const std::string& payload,
-    NinjabrainData& data,
-    const NinjabrainLogCallback& logError = {});
-
-void ApplyNinjabrainBlindEvent(
-    const std::string& payload,
-    NinjabrainData& data,
-    const NinjabrainLogCallback& logError = {});
-
-std::string NormalizeNinjabrainApiBaseUrl(std::string apiBaseUrl);
 
 struct NinjabrainApiSessionCallbacks {
     std::function<void(const std::string&)> onStrongholdMessage;

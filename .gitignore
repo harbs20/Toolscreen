@@ -10,6 +10,7 @@
 !scripts/verify_pe_metadata.ps1
 !scripts/**
 !docs
+!docs/*.md
 !docs/images/
 !docs/images/screenshot.png
 !lang

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "features/ninjabrain_api_constants.h"
 
 #include <Windows.h>
 #include <string>
@@ -248,7 +249,7 @@ constexpr bool CONFIG_RESTORE_WINDOWED_MODE_ON_FULLSCREEN_EXIT = true;
 constexpr bool CONFIG_DISABLE_FULLSCREEN_PROMPT = false;
 constexpr bool CONFIG_DISABLE_CONFIGURE_PROMPT = false;
 inline const std::string CONFIG_MIRROR_MATCH_COLORSPACE = "Auto";
-inline const std::string CONFIG_NINJABRAIN_API_BASE_URL = "http://127.0.0.1:52533";
+inline const std::string CONFIG_NINJABRAIN_API_BASE_URL = std::string(kDefaultNinjabrainApiBaseUrl);
 
 constexpr DWORD CONFIG_GUI_HOTKEY_MODIFIER = VK_LCONTROL;
 constexpr DWORD CONFIG_GUI_HOTKEY_KEY = 'I';
@@ -267,5 +268,4 @@ inline const std::string OVERLAY_TRANSITION_CUT = "Cut";
 inline const std::string BACKGROUND_TRANSITION_CUT = "Cut";
 
 }
-
 

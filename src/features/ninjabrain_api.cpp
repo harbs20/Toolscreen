@@ -1,49 +1,39 @@
 #include "ninjabrain_api.h"
 
 #include <httplib.h>
-#include <nlohmann/json.hpp>
 
+#ifndef TOOLSCREEN_PORTABLE_NINJABRAIN_API
 #include "common/utils.h"
-#include "config/config_defaults.h"
+#endif
 
 #include <chrono>
-#include <cmath>
 #include <functional>
 #include <utility>
 
 namespace {
 
-using json = nlohmann::json;
 using namespace std::chrono_literals;
 using SteadyClock = std::chrono::steady_clock;
 
 constexpr auto kNinjabrainReconnectIntervalMs = 200;
 constexpr auto kNinjabrainConnectionTimeout = 200ms;
+constexpr auto kNinjabrainReadTimeout = 2s;
+constexpr auto kNinjabrainWriteTimeout = 1s;
 constexpr char kStrongholdEventsPath[] = "/api/v1/stronghold/events";
 constexpr char kInformationMessagesEventsPath[] = "/api/v1/information-messages/events";
 constexpr char kBoatEventsPath[] = "/api/v1/boat/events";
 constexpr char kBlindEventsPath[] = "/api/v1/blind/events";
-
-std::string TrimString(std::string value) {
-    const auto first = value.find_first_not_of(" \t\r\n");
-    if (first == std::string::npos) { return {}; }
-
-    const auto last = value.find_last_not_of(" \t\r\n");
-    return value.substr(first, last - first + 1);
-}
-
-double NormalizeAngleDegrees(double angle) {
-    while (angle > 180.0) { angle -= 360.0; }
-    while (angle < -180.0) { angle += 360.0; }
-    return angle;
-}
 
 void LogIfPresent(const NinjabrainLogCallback& callback, const std::string& message) {
     if (callback) { callback(message); }
 }
 
 void LogNinjabrainApiMessage(const std::string& message) {
+#ifdef TOOLSCREEN_PORTABLE_NINJABRAIN_API
+    (void)message;
+#else
     LogCategory("ninjabrain", message);
+#endif
 }
 
 long long DurationToMilliseconds(SteadyClock::duration duration) {
@@ -59,6 +49,10 @@ std::pair<time_t, time_t> SplitDurationForHttplibTimeout(std::chrono::millisecon
 template <typename Callback, typename... Args>
 void InvokeIfPresent(const Callback& callback, Args&&... args) {
     if (callback) { callback(std::forward<Args>(args)...); }
+}
+
+bool IsQuietStreamTimeout(httplib::Error error) {
+    return error == httplib::Error::Read || error == httplib::Error::Timeout;
 }
 
 } // namespace
@@ -156,266 +150,6 @@ void NinjabrainApiConnectionTracker::MarkStreamDisconnected(StreamState& streamS
     lastError_ = std::move(error);
 }
 
-void ClearNinjabrainStrongholdData(NinjabrainData& data) {
-    const std::string boatState = data.boatState;
-    const double boatAngle = data.boatAngle;
-    const bool hasBoatAngle = data.hasBoatAngle;
-    const auto informationMessages = data.informationMessages;
-    const int informationMessageCount = data.informationMessageCount;
-    const NinjabrainBlindData blind = data.blind;
-
-    data = NinjabrainData{};
-    data.informationMessages = informationMessages;
-    data.informationMessageCount = informationMessageCount;
-    data.boatState = boatState;
-    data.boatAngle = boatAngle;
-    data.hasBoatAngle = hasBoatAngle;
-    data.blind = blind;
-}
-
-void ClearNinjabrainInformationMessagesData(NinjabrainData& data) {
-    data.informationMessages = {};
-    data.informationMessageCount = 0;
-}
-
-void ClearNinjabrainBoatData(NinjabrainData& data) {
-    data.boatState = "NONE";
-    data.boatAngle = 0.0;
-    data.hasBoatAngle = false;
-}
-
-void ClearNinjabrainBlindData(NinjabrainData& data) {
-    data.blind = {};
-}
-
-void ApplyNinjabrainBoatEvent(
-    const std::string& payload,
-    NinjabrainData& data,
-    const NinjabrainLogCallback& logError) {
-    if (payload.empty()) { return; }
-
-    try {
-        const json parsed = json::parse(payload);
-        data.boatState = parsed.value("boatState", "NONE");
-
-        const auto boatAngle = parsed.find("boatAngle");
-        if (boatAngle != parsed.end() && !boatAngle->is_null()) {
-            data.boatAngle = boatAngle->get<double>();
-            data.hasBoatAngle = true;
-        } else {
-            data.boatAngle = 0.0;
-            data.hasBoatAngle = false;
-        }
-    } catch (const std::exception& exception) {
-        LogIfPresent(logError, "Failed to parse boat event: " + std::string(exception.what()));
-    }
-}
-
-void ApplyNinjabrainStrongholdEvent(
-    const std::string& payload,
-    NinjabrainData& data,
-    const NinjabrainLogCallback& logError) {
-    if (payload.empty()) { return; }
-
-    try {
-        const json parsedJson = json::parse(payload);
-
-        const NinjabrainData previous = data;
-        const std::string resultType = parsedJson.value("resultType", "NONE");
-        if (resultType == "NONE") {
-            ClearNinjabrainStrongholdData(data);
-            data.resultType = resultType;
-            return;
-        }
-
-        NinjabrainData next;
-        next.resultType = resultType;
-
-        if (const auto playerPosition = parsedJson.find("playerPosition");
-            playerPosition != parsedJson.end() && playerPosition->is_object() && !playerPosition->empty()) {
-            next.playerX = playerPosition->value("xInOverworld", 0.0);
-            next.playerZ = playerPosition->value("zInOverworld", 0.0);
-            next.playerInNether = playerPosition->value("isInNether", false);
-            next.playerHorizontalAngle = playerPosition->value("horizontalAngle", 0.0);
-            next.hasPlayerPos = true;
-        }
-
-        if (const auto eyeThrows = parsedJson.find("eyeThrows"); eyeThrows != parsedJson.end() && eyeThrows->is_array()) {
-            next.eyeCount = (std::min)(static_cast<int>(eyeThrows->size()), static_cast<int>(next.throws.size()));
-            for (int index = 0; index < next.eyeCount; ++index) {
-                const auto& throwJson = (*eyeThrows)[index];
-                auto& currentThrow = next.throws[index];
-                currentThrow.xInOverworld = throwJson.value("xInOverworld", next.playerX);
-                currentThrow.zInOverworld = throwJson.value("zInOverworld", next.playerZ);
-                currentThrow.hasPosition = throwJson.contains("xInOverworld") || throwJson.contains("zInOverworld") || next.hasPlayerPos;
-                currentThrow.angle = throwJson.value("angle", 0.0);
-                currentThrow.angleWithoutCorrection = throwJson.value("angleWithoutCorrection", currentThrow.angle);
-                currentThrow.correction = throwJson.value("correction", 0.0);
-                currentThrow.error = throwJson.value("error", currentThrow.correction);
-                currentThrow.type = throwJson.value("type", "NORMAL");
-
-                const auto correctionIncrements = throwJson.find("correctionIncrements");
-                if (correctionIncrements != throwJson.end() && !correctionIncrements->is_null()) {
-                    currentThrow.correctionIncrements = correctionIncrements->get<int>();
-                    currentThrow.hasCorrectionIncrements = true;
-                }
-            }
-        }
-
-        if (next.eyeCount > 0 && !next.throws[next.eyeCount - 1].hasCorrectionIncrements) {
-            next.correctionIncrements151 = previous.correctionIncrements151;
-
-            if (next.eyeCount != previous.eyeCount) {
-                next.correctionIncrements151 = 0;
-            } else {
-                const double previousCorrection = previous.throws[previous.eyeCount - 1].correction;
-                const double delta = next.throws[next.eyeCount - 1].correction - previousCorrection;
-                if (delta > 1e-9) {
-                    ++next.correctionIncrements151;
-                } else if (delta < -1e-9) {
-                    --next.correctionIncrements151;
-                }
-            }
-        }
-
-        if (next.eyeCount >= 1) {
-            const auto& lastThrow = next.throws[next.eyeCount - 1];
-            next.lastAngle = lastThrow.angle;
-            next.lastAngleWithoutCorrection = lastThrow.angleWithoutCorrection;
-            next.lastCorrection = lastThrow.correction;
-            next.lastThrowError = lastThrow.error;
-            next.hasCorrection = std::abs(next.lastCorrection) > 1e-9;
-            next.hasThrowError = std::abs(next.lastThrowError) > 1e-9;
-
-            if (next.eyeCount >= 2) {
-                next.prevAngle = next.throws[next.eyeCount - 2].angle;
-                next.hasAngleChange = true;
-                next.hasNetherAngle = true;
-                next.netherAngle = next.lastAngle;
-                next.netherAngleDiff = next.lastAngle - next.throws[0].angle;
-            }
-        }
-
-        if (const auto predictions = parsedJson.find("predictions"); predictions != parsedJson.end() && predictions->is_array()) {
-            next.predictionCount =
-                (std::min)(static_cast<int>(predictions->size()), static_cast<int>(next.predictions.size()));
-            for (int index = 0; index < next.predictionCount; ++index) {
-                const auto& predictionJson = (*predictions)[index];
-                auto& prediction = next.predictions[index];
-                prediction.chunkX = predictionJson.value("chunkX", 0);
-                prediction.chunkZ = predictionJson.value("chunkZ", 0);
-                prediction.certainty = predictionJson.value("certainty", 0.0);
-                prediction.overworldDistance = predictionJson.value("overworldDistance", 0.0);
-
-                if (next.hasPlayerPos) {
-                    constexpr double kPi = 3.14159265358979323846;
-                    const double blockX = prediction.chunkX * 16.0 + 4.0;
-                    const double blockZ = prediction.chunkZ * 16.0 + 4.0;
-                    const double xDiff = blockX - next.playerX;
-                    const double zDiff = blockZ - next.playerZ;
-                    const double structureAngle = -std::atan2(xDiff, zDiff) * 180.0 / kPi;
-
-                    next.predictionAngles[index].actualAngle = structureAngle;
-                    next.predictionAngles[index].neededCorrection =
-                        NormalizeAngleDegrees(structureAngle - next.playerHorizontalAngle);
-                    next.predictionAngles[index].valid = true;
-                }
-            }
-        }
-
-        if (next.predictionCount > 0) {
-            next.strongholdX = next.predictions[0].chunkX * 16 + 4;
-            next.strongholdZ = next.predictions[0].chunkZ * 16 + 4;
-            next.distance = next.predictions[0].overworldDistance;
-            next.certainty = next.predictions[0].certainty;
-            next.validPrediction = true;
-        }
-
-        next.informationMessages = data.informationMessages;
-        next.informationMessageCount = data.informationMessageCount;
-        next.boatState = data.boatState;
-        next.boatAngle = data.boatAngle;
-        next.hasBoatAngle = data.hasBoatAngle;
-        next.blind = data.blind;
-        data = std::move(next);
-    } catch (const std::exception& exception) {
-        LogIfPresent(logError, "Failed to parse stronghold event: " + std::string(exception.what()));
-    }
-}
-
-void ApplyNinjabrainInformationMessagesEvent(
-    const std::string& payload,
-    NinjabrainData& data,
-    const NinjabrainLogCallback& logError) {
-    if (payload.empty()) { return; }
-
-    try {
-        const json parsedJson = json::parse(payload);
-        data.informationMessages = {};
-        data.informationMessageCount = 0;
-
-        const auto informationMessages = parsedJson.find("informationMessages");
-        if (informationMessages == parsedJson.end() || !informationMessages->is_array()) {
-            return;
-        }
-
-        data.informationMessageCount =
-            (std::min)(static_cast<int>(informationMessages->size()), static_cast<int>(data.informationMessages.size()));
-        for (int index = 0; index < data.informationMessageCount; ++index) {
-            const auto& messageJson = (*informationMessages)[index];
-            auto& message = data.informationMessages[index];
-            message.severity = messageJson.value("severity", "INFO");
-            message.type = messageJson.value("type", "");
-            message.message = messageJson.value("message", "");
-        }
-    } catch (const std::exception& exception) {
-        LogIfPresent(logError, "Failed to parse information-messages event: " + std::string(exception.what()));
-    }
-}
-
-void ApplyNinjabrainBlindEvent(
-    const std::string& payload,
-    NinjabrainData& data,
-    const NinjabrainLogCallback& logError) {
-    if (payload.empty()) { return; }
-
-    try {
-        const json parsedJson = json::parse(payload);
-
-        NinjabrainBlindData blind;
-        blind.enabled = parsedJson.value("isBlindModeEnabled", false);
-        blind.hasDivine = parsedJson.value("hasDivine", false);
-
-        const auto blindResult = parsedJson.find("blindResult");
-        if (blindResult != parsedJson.end() && blindResult->is_object() && !blindResult->empty()) {
-            blind.hasResult = true;
-            blind.evaluation = blindResult->value("evaluation", "");
-            blind.xInNether = blindResult->value("xInNether", 0.0);
-            blind.zInNether = blindResult->value("zInNether", 0.0);
-            blind.improveDistance = blindResult->value("improveDistance", 0.0);
-            blind.averageDistance = blindResult->value("averageDistance", 0.0);
-            blind.improveDirection = blindResult->value("improveDirection", 0.0);
-            blind.highrollProbability = blindResult->value("highrollProbability", 0.0);
-            blind.highrollThreshold = blindResult->value("highrollThreshold", 0.0);
-        }
-
-        if (!blind.enabled) {
-            blind = NinjabrainBlindData{};
-        }
-
-        data.blind = std::move(blind);
-    } catch (const std::exception& exception) {
-        LogIfPresent(logError, "Failed to parse blind event: " + std::string(exception.what()));
-    }
-}
-
-std::string NormalizeNinjabrainApiBaseUrl(std::string apiBaseUrl) {
-    apiBaseUrl = TrimString(std::move(apiBaseUrl));
-    while (!apiBaseUrl.empty() && apiBaseUrl.back() == '/') { apiBaseUrl.pop_back(); }
-    if (apiBaseUrl.empty()) { apiBaseUrl = ConfigDefaults::CONFIG_NINJABRAIN_API_BASE_URL; }
-    return apiBaseUrl;
-}
-
 NinjabrainApiSession::NinjabrainApiSession(std::string apiBaseUrl, NinjabrainApiSessionCallbacks callbacks)
     : apiBaseUrl_(NormalizeNinjabrainApiBaseUrl(std::move(apiBaseUrl))),
       callbacks_(std::move(callbacks)) {
@@ -479,7 +213,13 @@ void NinjabrainApiSession::RunStream(
     client.set_keep_alive(true);
     const auto [connectionTimeoutSeconds, connectionTimeoutMicros] =
         SplitDurationForHttplibTimeout(std::chrono::duration_cast<std::chrono::milliseconds>(kNinjabrainConnectionTimeout));
+    const auto [readTimeoutSeconds, readTimeoutMicros] =
+        SplitDurationForHttplibTimeout(std::chrono::duration_cast<std::chrono::milliseconds>(kNinjabrainReadTimeout));
+    const auto [writeTimeoutSeconds, writeTimeoutMicros] =
+        SplitDurationForHttplibTimeout(std::chrono::duration_cast<std::chrono::milliseconds>(kNinjabrainWriteTimeout));
     client.set_connection_timeout(connectionTimeoutSeconds, connectionTimeoutMicros);
+    client.set_read_timeout(readTimeoutSeconds, readTimeoutMicros);
+    client.set_write_timeout(writeTimeoutSeconds, writeTimeoutMicros);
 
     const httplib::Headers headers = {
         { "Accept", "text/event-stream" },
@@ -536,6 +276,11 @@ void NinjabrainApiSession::RunStream(
         if (stopToken.stop_requested() || error == httplib::Error::Canceled) { return; }
 
         const auto now = SteadyClock::now();
+        if (IsQuietStreamTimeout(error)) {
+            currentAttemptStartedAt = now;
+            return;
+        }
+
         const std::string errorString = httplib::to_string(error);
         const long long attemptDurationMs = DurationToMilliseconds(now - currentAttemptStartedAt);
 

@@ -47,6 +47,24 @@
         "TOOLSCREEN_ENABLE_JAR_PACKAGING": "OFF",
         "TOOLSCREEN_ENABLE_NINJABRAIN_API_MANUAL_TESTS": "ON"
       }
+    },
+    {
+      "name": "macos-portable",
+      "displayName": "macOS Portable",
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceDir}/out/build-macos-portable",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Darwin"
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "TOOLSCREEN_BUILD_WINDOWS_RUNTIME": "OFF",
+        "TOOLSCREEN_ENABLE_JAR_PACKAGING": "OFF",
+        "TOOLSCREEN_ENABLE_EXE_PACKAGING": "OFF",
+        "TOOLSCREEN_BUILD_DOWNLOADER_ARTIFACTS": "OFF"
+      }
     }
   ],
   "buildPresets": [
@@ -83,6 +101,11 @@
       "displayName": "Debug Manual Ninjabrain Tests",
       "configurePreset": "vs2022-x64-ninjabrain-manual-tests",
       "configuration": "Debug"
+    },
+    {
+      "name": "macos-portable-debug",
+      "displayName": "macOS Portable Debug",
+      "configurePreset": "macos-portable"
     }
   ],
   "testPresets": [
@@ -136,6 +159,14 @@
           "name": "^toolscreen_ninjabrain_"
         }
       },
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "macos-portable",
+      "displayName": "macOS Portable Tests",
+      "configurePreset": "macos-portable",
       "output": {
         "outputOnFailure": true
       }
